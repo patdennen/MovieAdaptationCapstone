@@ -1,0 +1,243 @@
+---
+title: "Analysis Plan"
+output: html_notebook
+---
+```{r}
+library(lubridate)
+library(dplyr)
+```
+
+#import finalized5
+```{r}
+finalized5<-finalized5
+```
+
+#create finalized 6 to account for missing goodreads data
+#trim down finalized 5 to only include wikipedia data, imdb data, and financial data. We can leverage goodreads missing data into a dummy variable
+#remove NAs using omit.na with this smaller selection of columns
+#reindex data onto larger col subset
+
+#import
+```{r}
+finalized6<-finalized5[,-c(1,24,25,26,27,28,29,30,13,10,7,19,20,21,22,23)]
+
+finalized6cut<-na.omit(finalized6)
+
+finalized6cut1 <- finalized6cut %>%
+  mutate(
+    # Check for duplicates in the 'movie_match' column.
+    # The 'duplicated()' function marks the 2nd, 3rd, etc., instances as TRUE.
+    # We use '|' (OR) with the reversed check to mark the 1st instance as TRUE, too.
+    # This flags ALL rows that have a duplicated movie_match value.
+    is_duplicated_movie_match = duplicated(movie_match) | duplicated(movie_match, fromLast = TRUE)
+  )
+df_no_duplicates_flag <- finalized6cut1 %>%
+  # 1. Group by the movie_match key
+  group_by(movie_match) %>%
+  
+  # 2. Within each group (i.e., for all duplicates), keep only the first row
+  # The row is kept regardless of the is_duplicated_movie_match flag, 
+  # as long as the movie_match value is the same.
+  slice(1) %>%
+  
+  # 3. Always ungroup after grouping operations
+  ungroup() %>%
+  
+  # 4. Optional: Remove the flag column if no longer needed
+  select(-is_duplicated_movie_match)
+
+
+
+finalized5cut1 <- finalized5 %>%
+  mutate(
+    # Check for duplicates in the 'movie_match' column.
+    # The 'duplicated()' function marks the 2nd, 3rd, etc., instances as TRUE.
+    # We use '|' (OR) with the reversed check to mark the 1st instance as TRUE, too.
+    # This flags ALL rows that have a duplicated movie_match value.
+    is_duplicated_movie_match = duplicated(movie_match) | duplicated(movie_match, fromLast = TRUE)
+  )
+df_no_duplicates_flag5 <- finalized5cut1 %>%
+  # 1. Group by the movie_match key
+  group_by(movie_match) %>%
+  
+  # 2. Within each group (i.e., for all duplicates), keep only the first row
+  # The row is kept regardless of the is_duplicated_movie_match flag, 
+  # as long as the movie_match value is the same.
+  slice(1) %>%
+  
+  # 3. Always ungroup after grouping operations
+  ungroup() %>%
+  
+  # 4. Optional: Remove the flag column if no longer needed
+  select(-is_duplicated_movie_match)
+
+
+
+#now unique movie matches
+#length(unique(df_no_duplicates_flag$movie_match)) == df_no_duplicates_flag
+finalized6<-left_join(df_no_duplicates_flag[,c(23)],df_no_duplicates_flag5,"movie_match")
+```
+
+
+#restate df
+```{r}
+df<-finalized6
+```
+
+#fix some variables numeric
+```{r}
+df$runtimeMinutes<-parse_number(df$runtimeMinutes)
+
+df$worldwide_gross<-parse_number(df$worldwide_gross)
+
+# Assuming your data frame is named 'df' and the column is 'release_date'
+df <- df %>%
+  mutate(
+    # Step 1: Use a regular expression to find the first instance of four consecutive digits.
+    # The pattern "\\d{4}" means "find 4 digits (0-9)"
+    book_year_str = str_extract(Book, "\\d{4}"),
+    
+    # Step 2: Convert the extracted string to a numeric (integer) value.
+    # This is essential for calculating the Book-to-Movie Lag later.
+    book_year = as.numeric(book_year_str)
+  )
+
+```
+
+#calculate other statistics
+```{r}
+df$book_movie_years<-df$wikiMovieYear-df$book_year
+
+df$ROI<-(df$worldwide_gross-df$production_budget)/df$production_budget
+```
+
+#expand genres
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Assuming your data frame is named 'df'
+
+df <- df %>%
+  # 1. Perform the separation and create the new genre columns
+  separate(
+    col = genres,          # The column to split (which is still retained by default)
+    into = c("genre_1", "genre_2", "genre_3"), # Names of the new columns
+    sep = ",",             # The delimiter
+    extra = "drop",        # Drops any genres beyond the third one
+    fill = "right",        # Fills missing values on the right with NA
+    remove = FALSE         # ***CRITICAL: Ensures the original 'genres' column is KEPT***
+  ) %>%
+  
+  # 2. Trim leading/trailing whitespace from the new columns for cleanliness
+  mutate(
+    genre_1 = trimws(genre_1),
+    genre_2 = trimws(genre_2),
+    genre_3 = trimws(genre_3)
+  )
+
+# The data frame 'df_processed' now contains:
+# - The original 'genres' column (e.g., "Action, Adventure, Sci-Fi")
+# - The new, clean columns: 'genre_1' ("Action"), 'genre_2' ("Adventure"), 'genre_3' ("Sci-Fi")
+```
+
+
+#eda
+#genre
+```{r}
+#transpose on genre
+df_genre <- df %>%
+  pivot_longer(
+    cols = starts_with("genre_"), # Stack genre_1, genre_2, genre_3
+    names_to = "genre_position",
+    values_to = "genre_name",
+    values_drop_na = TRUE       # Remove the NA entries
+  )
+
+#EDA
+ggplot(df_genre, aes(y = ROI, x = genre_name)) +
+  geom_boxplot(fill = "skyblue", color = "darkblue", outlier.colour = "red", outlier.shape = 1) +
+  labs(
+    title = "ROI by Genre",
+    x = "Genre",
+    y = "ROI"
+  ) +
+  # Optional: Reorder the genres based on their median ROI for better comparison
+  scale_y_discrete(limits = rev(sort(unique(df_genre$genre_name)))) +
+  theme_minimal()
+```
+
+#book_movie_years
+```{r}
+ggplot(df,aes(x=book_movie_years,y=log(ROI))) + geom_point()
+```
+
+
+#book_movie
+```{r}
+#remove beowulf
+df_movie<-df[c(df[,38]!="Beowulf"),]
+ggplot(df_movie,aes(x=book_year,y=log(ROI))) + geom_point()
+```
+
+#goodreads book popularity dummy three levels
+```{r}
+library(dplyr)
+
+# Filter out rows where goodreads_numratings is NA
+df_non_na <- df %>%
+  filter(!is.na(goodreads_numratings))
+
+# Calculate the tertile thresholds (33.3% and 66.7% percentiles) on the non-NA data
+tertiles <- df_non_na %>%
+  pull(goodreads_numratings) %>%
+  quantile(probs = c(1/3, 2/3))
+
+low_threshold <- unname(tertiles[1])
+medium_threshold <- unname(tertiles[2])
+
+print(paste("Low threshold (bottom 1/3) value:", low_threshold))
+print(paste("Medium threshold (middle 1/3) value:", medium_threshold))
+# 1. Ensure the popularity level is a factor with the correct order 
+# (This is crucial for the x-axis)
+library(ggplot2)
+
+df_processed <- df_non_na %>%
+  # 1. Create the 3-level popularity column
+  mutate(
+    book_popularity_level = case_when(
+      goodreads_numratings <= low_threshold ~ "Low",
+      goodreads_numratings > low_threshold & goodreads_numratings <= medium_threshold ~ "Medium",
+      goodreads_numratings > medium_threshold ~ "High",
+      TRUE ~ "Other" # Should catch any remaining odd cases
+    ),
+    
+    # 2. Convert to a factor for proper plotting/ordering
+    book_popularity_level = factor(
+      book_popularity_level,
+      levels = c("Low", "Medium", "High")
+    ),
+    
+    # 3. Calculate ROI (re-running this to be safe, if not already done)
+    # Ensure financial columns are numeric
+    worldwide_gross = as.numeric(worldwide_gross),
+    production_budget = as.numeric(production_budget),
+    ROI = (worldwide_gross - production_budget) / production_budget
+  ) %>%
+  # 4. Filter out any remaining NAs in ROI before plotting
+  drop_na(ROI)
+
+
+# 5. Generate the Box Plot
+ggplot(df_processed, aes(x = book_popularity_level, y = log(ROI))) +
+  geom_violin(fill = "salmon", color = "darkred", outlier.colour = "red", outlier.shape = 1) +
+  labs(
+    title = "Movie ROI Distribution by Book Popularity Level",
+    subtitle = "Book Popularity based on Goodreads Number of Ratings (Tertiles)",
+    x = "Book Popularity Level",
+    y = "Return on Investment (ROI)"
+  ) +
+  theme_minimal()
+```
+
+
