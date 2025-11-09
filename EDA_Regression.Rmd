@@ -1,0 +1,70 @@
+---
+title: "EDA regression"
+output: pdf_document
+date: "2025-11-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+data <- read.csv("FINAL_DF.csv")
+head(data)
+```
+
+```{r}
+hist(data$ROI, xlab="ROI", main="Histogram of ROI") 
+```
+
+```{r}
+
+model1 <- lm(ROI~startYear+runtimeMinutes+genre_1+genre_2+genre_3+averageRating+numVotes+name_match+contains_series+book_movie_years, data = data)
+summary(model1)
+```
+I added what I thought could work. The character values cant really be used. I included genre and it auto made them into dummy variables (there are a lot of options = a lot of dummy vars). I didn't include any of the money because i figures that would add multicollinearity to the model. Realistically you should also check for interactions, but I didn't ge that far. 
+
+look at stepwise
+```{r}
+library(olsrr)
+ols_step_both_p(model1,p_ent=0.05,p_rem=0.05,details=F)
+
+```
+Through this model it tells us to only add startyear, numVotes, contians_series, runtimeMinutes, genre_2
+
+```{r}
+model2 <- lm(ROI~startYear+runtimeMinutes+genre_2+numVotes+contains_series, data = data)
+summary(model2)
+```
+
+
+```{r}
+library(car)
+movievif<-round(vif(model2),3)
+movievif
+mean(movievif)
+```
+No VIF can be above 10 and the mean have to less than 3. Model looks fine
+
+
+```{r}
+#store residuals from the model
+movieres<-residuals(model2)
+sum(movieres)
+mean(movieres)
+
+#Residuals Plots of explanatory variables vs residuals
+residualPlots(model2,tests=F)
+
+#Residual vs Fitted and QQ plot
+plot(model2, which=c(1,2))
+
+#histogram of residuals
+hist(movieres)
+```
+
+
+-   Lack of Fit: Residual Plots - the plots should be evenly spread on either side of the line - the curved blue line means the assumption is not met 
+-   Constant Variance: Residual Plots and Residual vs Fitted - the fanning out pattern is a violation
+-   Normality: QQ Plot and Histogram of Residuals - should follow the line - many dots that don't follow the line - violation
+-   Independence: For the sake of this class we will not explore this assumption other than stating we do not believe the observations are dependent on each other. - doesn't really apply to us because we aren't looking at time series
