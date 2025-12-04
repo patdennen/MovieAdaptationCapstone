@@ -20,7 +20,7 @@ finalized5<-finalized5
 #import
 ```{r}
 finalized6<-finalized5[,-c(1,24,25,26,27,28,29,30,13,10,7,19,20,21,22,23)]
-
+length(finalized6)
 finalized6cut<-na.omit(finalized6)
 
 finalized6cut1 <- finalized6cut %>%
@@ -169,8 +169,21 @@ ggplot(df_genre, aes(y = ROI, x = genre_name)) +
 
 #book_movie_years
 ```{r}
-ggplot(df,aes(x=book_movie_years,y=log(ROI))) + geom_point()
+#index out outliers
+ggplot(df[(df[,30]<=400),],aes(x=book_movie_years,y=log(ROI))) + geom_point()
 ```
+
+#production budget
+```{r}
+ggplot(df,aes(x=log(production_budget),y=log(ROI))) + geom_point()
+head(df)
+```
+
+#runtime
+```{r}
+ggplot(df,aes(x=runtimeMinutes,y=log(ROI))) + geom_point()
+```
+
 
 
 #book_movie
@@ -240,4 +253,239 @@ ggplot(df_processed, aes(x = book_popularity_level, y = log(ROI))) +
   theme_minimal()
 ```
 
+```{r}
+head(df)
+df
+```
+
+
+
+
+
+#write csv
+```{r}
+#write_csv(df,"/Users/patrickdennen/Desktop/capstone/finalized6.csv")
+head(tibble(FINALDF))
+FINAL_DF<-FINALDF[,c(3,4,6,11,12,13,14,15,16,17,18,19,22,24,25,26,27,28,29,30,31,32,33,34,37,39,40,41,44,45,46,47,48)]
+write_csv(FINAL_DF,"/Users/patrickdennen/Desktop/capstone/FINAL_DF.csv")
+
+df<-read.csv("/Users/patrickdennen/Desktop/capstone/FINAL_DF.csv")
+```
+
+
+
+
+
+
+
+
+#model
+
+```{r}
+dfmodel<-df[-c(210),c(6,26,31,32,30,8,33)]
+dfmodel$bmy_12<-(dfmodel$book_movie_years >= median(dfmodel$book_movie_years))
+dfmodel<-dfmodel[,-c(5)]
+```
+
+#encode categorical variables
+```{r}
+# Create a copy of the sample data for encoding
+sample_dfmodel1 <- dfmodel
+
+# Use model.matrix for each categorical variable
+genre1_dummies <- model.matrix(~ genre_1 - 1, data = dfmodel)
+name_match_dummies <- model.matrix(~ name_match - 1, data = dfmodel)
+bmy_dummies <- model.matrix(~ bmy_12 - 1, data = dfmodel)
+cs_dummies <- model.matrix(~ contains_series - 1, data = dfmodel)
+#contains_series_dummies <- model.matrix(~ contains_series - 1, data = dfmodel)
+
+# Combine encoded columns with the remaining dataset
+sample_dfmodel1 <- cbind(
+  dfmodel,
+  genre1_dummies,
+  name_match_dummies,
+  bmy_dummies
+)
+
+# View the structure of the encoded dataset
+
+sample_dfmodel<-sample_dfmodel1[,c(1,2,3,13,17,19,21)]
+str(sample_dfmodel)
+
+
+```
+
+#random sample
+```{r}
+# 1. Set a "seed" for reproducibility
+# This ensures you get the exact same random split every time you run the code.
+set.seed(123) 
+
+# 2. define your split ratio (e.g., 0.7 for 70% training data)
+split_ratio <- 0.7
+
+# 3. Create a list of random indices
+# We take a sample of row numbers equal to 70% of the total rows
+train_index <- sample(1:nrow(sample_dfmodel), split_ratio * nrow(sample_dfmodel))
+
+# 4. Create the two new dataframes
+train_data <- sample_dfmodel[train_index, ]
+test_data  <- sample_dfmodel[-train_index, ]
+
+# 5. Verify the split (Optional)
+print(paste("Training rows:", nrow(train_data)))
+print(paste("Testing rows:", nrow(test_data)))
+```
+
+
+#install packages
+```{r}
+install.packages("rpart")
+install.packages("rpart.plot")
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+
+# 1. Train the Regression Tree
+# method = "anova" tells R this is for a continuous target (Regression)
+# If you leave it out, R usually figures it out, but it's safer to be explicit.
+tree_model <- rpart(ROI ~ ., 
+                    data = train_data, 
+                    method = "anova")
+
+# 2. Visualize the Tree (The best part!)
+# type = 3 draws separate split labels for left and right
+# digits = 3 ensures you see enough precision in the numbers
+rpart.plot(tree_model, type = 1, digits = 3, fallen.leaves = TRUE)
+
+# 3. Make Predictions
+dt_predictions <- predict(tree_model, newdata = test_data)
+
+# 4. Check Performance (RMSE)
+rmse_dt <- sqrt(mean((test_data$Target_Variable - dt_predictions)^2))
+print(paste("Decision Tree RMSE:", rmse_dt))
+```
+
+
+
+#train decision tree
+```{r}
+train_decision_tree <- function(data, target_col, tune_grid) {
+  # Ensure target column is a factor
+  data[[target_col]] <- factor(data[[target_col]], levels = c(0, 1))
+  
+  # Split data into training and testing sets
+  set.seed(123)
+  train_indices <- createDataPartition(data[[target_col]], p = 0.8, list = FALSE)
+  train_data <- data[train_indices, ]
+  test_data <- data[-train_indices, ]
+  
+  # Train control with cross-validation
+  train_control <- trainControl(
+    method = "cv",           # Cross-validation
+    number = 5,              # 5-fold CV
+    classProbs = TRUE,       # Enable probabilities
+    summaryFunction = twoClassSummary # For ROC evaluation
+  )
+
+    # Train the model with parameter tuning
+  model <- train(
+    as.formula(paste(target_col, "~ .")), 
+    data = train_data, 
+    method = "rpart", 
+    trControl = train_control, 
+    tuneGrid = tune_grid,   # Grid for tuning
+    metric = "ROC"          # Use ROC to select the best model
+  )
+  
+  # Predict on test data
+  predictions_prob <- predict(model, newdata = test_data, type = "prob")
+  predictions_class <- predict(model, newdata = test_data)
+  
+  # Calculate metrics
+  confusion <- confusionMatrix(predictions_class, test_data[[target_col]])
+  roc_curve <- roc(test_data[[target_col]], predictions_prob[, 2])
+  metrics <- list(
+    Accuracy = confusion$overall["Accuracy"],
+    Precision = confusion$byClass["Pos Pred Value"],
+    Recall = confusion$byClass["Sensitivity"],
+    F1_Score = 2 * (confusion$byClass["Pos Pred Value"] * confusion$byClass["Sensitivity"]) / 
+                (confusion$byClass["Pos Pred Value"] + confusion$byClass["Sensitivity"]),
+    ROC_AUC = auc(roc_curve)
+  )
+  
+  # Return model, metrics, and the confusion matrix
+  return(list(
+    Model = model,
+    Metrics = metrics,
+    Confusion_Matrix = confusion
+  ))
+}
+
+```
+
+#gradient boost and surrogate tree
+```{r}
+library(gbm)
+
+set.seed(123)
+
+# 1. Train the model with Cross-Validation
+# Note: We use 'sample_dfmodel' (your full data), not 'train_data'
+cv_boost_model <- gbm(ROI ~ ., 
+                      data = sample_dfmodel,
+                      distribution = "gaussian",
+                      n.trees = 1000,
+                      interaction.depth = 4,
+                      shrinkage = 0.01,
+                      n.minobsinnode = 10,
+                      bag.fraction = 0.5,      # <--- IMPORTANT for small data
+                      cv.folds = 5)            # <--- This turns on 5-Fold CV
+
+# 2. Check the "Optimal" number of trees based on CV error
+# This helps prevent overfitting, which is common with small data
+best_iter <- gbm.perf(cv_boost_model, method = "cv")
+print(paste("Optimal Trees:", best_iter))
+
+# 3. Get the Cross-Validation RMSE
+# This number is much more trustworthy than your single-split RMSE
+cv_rmse <- sqrt(min(cv_boost_model$cv.error))
+print(paste("Cross-Validated RMSE:", cv_rmse))
+
+library(rpart)
+library(rpart.plot)
+
+
+
+# 1. Generate predictions from your complex Boosted Model
+# n.trees = best_iter (the optimal number you found in the previous step)
+# If you didn't save best_iter, just use 1000 or however many you trained.
+gbm_predictions <- predict(cv_boost_model, 
+                           newdata = sample_dfmodel, 
+                           n.trees = best_iter)
+
+# 2. Create a temporary dataframe
+# We want to predict the "GBM_Score", not the real "ROI"
+surrogate_data <- sample_dfmodel
+surrogate_data$GBM_Predictions <- gbm_predictions
+
+# Remove the actual ROI so the tree doesn't cheat (optional, but good practice)
+surrogate_data$ROI <- NULL 
+
+# 3. Train a single "Surrogate" Tree
+# We set cp (complexity parameter) slightly loose to ensure we get a readable tree
+surrogate_tree <- rpart(GBM_Predictions ~ ., 
+                        data = surrogate_data, 
+                        method = "anova",
+                        control = rpart.control(cp = 0.005))
+
+# 4. Visualize the "Logic" of your Boosted Model
+rpart.plot(surrogate_tree, 
+           type = 3, 
+           digits = 3, 
+           fallen.leaves = TRUE,
+           main = "Surrogate Tree: Approximate Logic of GBM Model")
+```
 
